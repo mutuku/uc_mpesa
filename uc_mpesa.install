@@ -1,0 +1,122 @@
+<?php
+
+/**
+ * @file
+ * 
+ * Implements hook_schema()
+ *  
+ */
+
+function uc_mpesa_schema() {
+	
+  $schema['uc_mpesa_entries'] = array(
+    'description' => 'Stores MPESA payment information.',
+    'fields' => array(
+      'order_id' => array(
+        'description' => 'The {uc_orders}.order_id.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'mpesa_code' => array(
+        'description' => 'The MPESA CODE entered by the user',
+        'type' => 'varchar',
+        'not null' => FALSE,
+        'length' => 255,
+      ),
+	  
+      'mpesa_phone' => array(
+        'type' => 'varchar',
+        'not null' => FALSE,
+        'length' => 255,
+        'description' => 'the phone number sending the money',
+      ),
+        
+      'support_phone' => array(
+        'type' => 'varchar',
+        'not null' => FALSE,
+        'length' => 255,
+        'description' => 'support phone number',
+      ),
+      
+    ),
+    'primary key' => array('order_id'),
+    'foreign keys' => array(
+      'uc_orders' => array(
+        'table' => 'uc_orders',
+        'columns' => array('order_id' => 'order_id'),
+      ),
+    ),
+  );
+  	
+  $schema['uc_mpesa_transactions'] = array(
+    'description' => 'This table stores transactions from mpesa',
+    'fields' => array(
+      'transaction_id' => array(
+        'type' => 'varchar',
+        'not null' => TRUE,
+        'length' => 255,
+        'description' => 'the mpesa transaction id',
+      ),
+      'transaction_timestamp' => array(
+        'type' => 'varchar',
+        'not null' => FALSE,
+        'length' => 255,
+        'description' => 'the mpesa transaction time',
+      ),
+      'sender_phone' => array(
+        'type' => 'varchar',
+        'not null' => FALSE,
+        'length' => 255,
+        'description' => 'the phone number sending the money',
+      ),
+      'first_name' => array(
+        'type' => 'varchar',
+        'not null' => FALSE,
+        'length' => 255,
+        'description' => 'First name of sender',
+      ),
+      'last_name' => array(
+        'type' => 'varchar',
+        'not null' => FALSE,
+        'length' => 255,
+        'description' => 'Last name of sender',
+      ),
+      'amount' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'length' => 255,
+        'description' => 'The amount paid in',
+      ),
+      'status' => array(
+        'type' => 'int',
+        'not null' => FALSE,
+        'length' => 255,
+        'default' => 0,
+        'description' => 'Is the transaction id already taken',
+      ),
+      'payment_confirmed' => array(
+        'type' => 'int',
+        'not null' => FALSE,
+        'length' => 255,
+        'description' => 'The time when the transaction status changed',
+      ),
+    ),
+    'primary key' => array('transaction_id'),
+  );
+
+  return $schema;
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function uc_mpesa_uninstall() {
+  db_delete('variable')
+    ->condition(db_or()
+      ->condition('name', 'uc_mpesa_%', 'LIKE')
+      //->condition('name', 'uc_cod_%', 'LIKE')
+    )
+    ->execute();
+}

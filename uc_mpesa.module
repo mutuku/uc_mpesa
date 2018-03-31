@@ -1,0 +1,372 @@
+<?php
+
+/**
+ * @file
+ *
+ * Implements Mpesa support for Drupal ubercart via Kopo Kopo
+ *
+ * @todo Provide a feature for partial payments
+ */
+
+
+/**
+ * 
+ *
+ * Hook Menu
+ */
+function uc_mpesa_menu() {
+    $items['uc_mpesa_receive'] = array(
+      'title' => 'Receive payload from kopokopo',
+      'page callback' => 'uc_mpesa_receive',
+      'access arguments' => array('access content'),
+      'type' => MENU_CALLBACK,
+    );
+
+  return $items;
+}
+ 
+
+/**
+ * 
+ *
+ * Define the gateway
+ */
+function uc_mpesa_uc_payment_gateway() {
+  $gateways['uc_mpesa'] = array(
+    'title' => t('Mpesa payment gateway'),
+    'description' => t('Process payments through mpesa (kopokopo) payment gateway'),
+  );
+  return $gateways;
+}
+
+/**
+ * 
+ *
+ * Define the gateway
+ */
+ function uc_mpesa_uc_payment_method() {
+  $title = "Mpesa buygoods"." <strong>".variable_get('mpesa_paybill'). "</strong>";
+  
+  $methods[] = array(
+    'id' => 'uc_mpesa',
+    'name' => t('Mpesa'),
+    'title' => $title,
+    'desc' => t('Pay through mpesa'),
+    'callback' => 'uc_payment_method_mpesa',
+    'weight' => 1,
+    'checkout' => TRUE,
+    'no_gateway' => TRUE,
+  );
+  return $methods;
+}
+
+
+/**
+ * Payment method callback for the "Mpesa" payment method.
+ */
+function uc_payment_method_mpesa($op, &$order, $form = NULL, $form_state = NULL) {
+  switch ($op) {
+    case 'cart-details':
+	//dsm($order);
+	$deposit=ceil($order->order_total/2);
+	  $mpesa_instructions = '<div class="mpesa-instructions">' . 'Make a payment of <strong> ' . $order->order_total . '</strong> to the following M-Pesa Buygoods till number :<strong> ' . variable_get('mpesa_paybill') . ' </strong></div>'
+       . '<ul class="mpesa-instructions-list">'
+        . '<li>Go to Safaricom Mpesa menu</li>'
+        . '<li>Select the "Lipa Na M-Pesa" option</li>'
+        . '<li>Select the "Buy Goods And Services" option</li>'
+        . '<li>Enter <strong> ' . variable_get('mpesa_paybill') . '</strong> as the  till number</li>'
+        . '<li>Enter <strong>' . $deposit . ' </strong> as the  amount</li>'
+        . '<li>After getting a response from Safaricom complete the M-Pesa transaction code below</li>'
+       . '</ul>';
+		 
+		 $build['policy'] = array(
+			'#markup' => '<p>' . variable_get('uc_mpesa_policy', t($mpesa_instructions)) . '</p>'
+		  );
+
+        
+        $build += uc_payment_method_mpesa_form(array(), $form_state, $order);
+      
+      return $build;
+
+    case 'cart-process':
+        $order->payment_details = $form_state['values']['panes']['payment']['details'];
+	    //dsm($order->payment_details);
+      return TRUE;
+
+    case 'cart-review':
+      $review = array();
+        $review[] = array('title' => t('Mpesa Code'), 'data' =>  $order->payment_details['mpesa_code']);
+		$review[] = array('title' => t('Mpesa Phone'), 'data' =>  $order->payment_details['mpesa_phone']);
+		//print_r($order);
+		 //dsm($order->payment_details);
+      return $review;
+
+    case 'order-view':
+    case 'customer-view':
+        $build = array('#markup' => '');
+        $build['#markup'] = t('Mpesa Code:') . '<br />' . $order->payment_details['mpesa_code'];
+		//$build = array('#markup' => '');
+		$build['#markup'] = t('Mpesa Phone:') . '<br />' . $order->payment_details['mpesa_phone'];
+	
+     return $build;
+
+    case 'order-details':
+      $build = array();
+        $build = uc_payment_method_mpesa_form(array(), $form_state, $order);
+      return $build;
+
+    case 'order-load':
+     
+        $result = db_query('SELECT * FROM {uc_mpesa_entries} WHERE order_id = :id', array(':id' => $order->order_id));
+		foreach ($result as $row) {
+			$order->payment_details = array(
+			  'mpesa_code' => $row->mpesa_code,
+			  'mpesa_phone' => $row->mpesa_phone,
+			);
+		}
+		 
+      break;
+
+    case 'order-submit':
+	
+	//check if the payment has been received and compelete the order
+	 if(uc_mpesa_find_mpesa_transaction($order->payment_details['mpesa_phone'], $order->payment_details['mpesa_code'], $order->order_total)) {
+		
+		uc_mpesa_finish_mpesa_transaction($order->payment_details['mpesa_phone'], $order->payment_details['mpesa_code'],$order->order_total);
+		uc_payment_enter($order->order_id, 'uc_mpesa',$order->order_total , $order->uid, NULL,  $order->order_id);
+        uc_cart_complete_sale($order, variable_get('uc_new_customer_login', FALSE));
+ 
+        //sreturn 'Thank you for your purchase';
+	
+	 }else {
+		 
+		$result[] = array(
+          'pass' => FALSE,
+          'message' => t('The Code / Phone number combination is incorrect.  Please click the back button and enter the right payment details.<br/>
+		   In the event the details entered are correct, please try again after 10 minutes. This might be due to  MPESA delays <br/>
+		   For assistance, please call us on '.variable_get('support_phone') )
+        );
+        $_SESSION['expanded_panes'][] = 'payment';
+        return $result;
+	 }
+	 ///exit;
+	 
+	 //return $result;
+    
+      // TODO: This falls through to the order-save case - is this deliberate?
+      // If so, it should be documented.
+
+    case 'order-save':
+      if (isset($order->payment_details['mpesa_code'])) {
+        db_merge('uc_mpesa_entries')
+          ->key(array('order_id' => $order->order_id))
+          ->fields(array(
+            'mpesa_code' => $order->payment_details['mpesa_code'],
+			'mpesa_phone' => $order->payment_details['mpesa_phone'],
+          ))
+          ->execute();
+      }
+      break;
+
+    case 'order-delete':
+      db_delete('uc_mpesa_entries')
+        ->condition('order_id', $order->order_id)
+        ->execute();
+      break;
+
+    case 'settings':
+    // Set defaults for first time load.
+	
+    $form['kopokopo_secret'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Kopokopo Secret'),
+      '#description' => t('Secret Key as provided by Kopokopo'),
+      '#default_value' => variable_get('kopokopo_secret'),
+      '#required' => TRUE,
+    );
+
+    $form['mpesa_paybill'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Paybill Number'),
+      '#description' => t('The Mpesa Till Number'),
+      '#default_value' => variable_get('mpesa_paybill'),
+      '#required' => TRUE,
+    );
+    
+    $form['support_phone'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Support phone number'),
+      '#description' => t('The number clients can call for support. Will be displayed on payment error messages'),
+      '#default_value' => variable_get('support_phone'),
+      '#required' => TRUE,
+    );
+
+   
+    $form['require_mpesa_phone'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Require user to enter mobile phone number used to make the payment.'),
+      '#default_value' => variable_get('require_mpesa_phone'),
+    );
+	
+    $form['require_mpesa_code'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Require user to enter transaction code received after making payment.'),
+      '#default_value' => variable_get('require_mpesa_code'),
+      '#default_value' =>TRUE,
+    );
+    
+    return $form;
+  }
+}
+
+function uc_payment_method_mpesa_form($form, &$form_state, $order) {
+	 
+     if(variable_get('require_mpesa_code') == 1) { 
+		 $form['mpesa_code'] = array(
+		  '#type' => 'textfield',
+		  '#title' => t('Mpesa Transaction Code'),
+		  '#description' => t('Enter the mpesa transaction code received after sending the order amount to the Buygoods till number '.variable_get('mpesa_paybill')),
+		  '#required' => TRUE,
+		 );
+	 }
+	
+   if(variable_get('require_mpesa_phone') == 1) { 	
+		$form['mpesa_phone'] = array(
+		  '#type' => 'textfield',
+		  '#title' => t('Phone Number'),
+		  '#description' => t('Enter the phone number used to make the payment to '.variable_get('mpesa_paybill'). ". Format 07xxxxxxxx"),
+		  '#required' => TRUE,
+		);
+   }
+  return $form;
+}
+
+
+/**
+ * Find an mpesa transaction
+ *
+ * @param $phone_number
+ * @param $transaction_id
+ * @return DatabaseStatementInterface|null
+ */
+function uc_mpesa_find_mpesa_transaction($phone_number, $transaction_id, $order_total) {
+    // Create an object of type SelectQuery
+	//echo $phone_number;
+	//echo $transaction_id;
+    $query = db_select('uc_mpesa_transactions', 'm');
+    $query->condition('m.sender_phone', $phone_number, '=')
+        ->condition('m.transaction_id', $transaction_id, '=')
+        ->condition('m.status', 0, '=')
+        ->fields('m', array('transaction_id', 'sender_phone', 'amount', 'first_name', 'last_name'));
+
+    //$results = $query->execute();
+	if ($num_rows = $query->countQuery()->execute()->fetchField() == 1) { // if record exists
+		//TODO: Implement deposit payments
+		$result = $query->execute();  //get the record
+		$record = $result->fetchAll();
+		$paid_amount = $record[0]->amount;
+	    if($paid_amount >= $order_total){
+		   return TRUE;
+		}
+	}
+	
+	return FALSE;  
+}
+
+
+
+
+/**
+ * Mark an mpesa transaction as complete
+ *
+ * @param $phone_number
+ * @param $transaction_id
+ */
+function uc_mpesa_finish_mpesa_transaction($phone_number, $transaction_id) {
+    db_update('uc_mpesa_transactions')
+        ->fields(array(
+            'status' => 1
+        ))
+        ->condition('sender_phone', $phone_number)
+        ->condition('transaction_id', $transaction_id)
+        ->execute();
+}
+
+
+/**
+ * Store a new mpesa transaction inthe database.
+ * 
+ * The payload data is what we receive from the Kopokopo push api.
+ * 
+ * @return string
+ */ 
+function uc_mpesa_receive() {
+    
+    $received_json = file_get_contents("php://input",  TRUE);
+	
+	//$received_json = '{"service_name":"M-PESA","business_number":"562544","transaction_reference":"LH36R98VAQ","internal_transaction_id":6765505,"transaction_timestamp":"2017-08-03T00:34:35Z","transaction_type":"buygoods","account_number":"N/A","sender_phone":"+254722490994","first_name":"JAMES","middle_name":null,"last_name":"MUTUKU","amount":"1.0","currency":"Ksh","signature":"iP8GEZYZF43CIOQ61Db8bXEhnMw="}';
+
+    $payload = drupal_json_decode($received_json, TRUE);
+
+    //Verify the transaction
+    if (uc_mpesa_verify_kopokopo($payload, variable_get('kopokopo_secret'))) {
+        db_insert('uc_mpesa_transactions') -> fields([
+		        'first_name' => $payload['first_name'],
+                'last_name' => $payload['last_name'],
+                'amount' => (int)$payload['amount'],
+                'transaction_id' => $payload['transaction_reference'],
+                'transaction_timestamp' => $payload['transaction_timestamp'],
+                'status' => 0,
+                'payment_confirmed' => time(),
+                'sender_phone' => str_replace('+254', '0', $payload['sender_phone']),
+            ])
+            ->execute();
+
+        $response_data = [
+            "status" => "01",
+            "description" => "Accepted",
+            "subscriber_message" => "Message to send to subscriber"
+        ];
+
+        return drupal_json_output($response_data);
+    }
+    else{
+        return drupal_json_output([]);
+    }
+
+}
+
+ /**
+  * Verify that the transaction coming in from kopokopo is valid
+  * 
+  * @param array $payload An array formed out of the kopokopo payload.
+  *
+  * @return boolean
+  */
+function uc_mpesa_verify_kopokopo(array $payload, $secret) {
+        $signature = $payload['signature'];
+
+        unset($payload['signature']);
+
+        ksort($payload);
+
+        $tx_array = array();
+
+        foreach ($payload as $key => $value) {
+            array_push($tx_array, $key . '=' . $value);
+        }
+
+        $encodable_str = implode('&', $tx_array);
+
+
+        $hash = hash_hmac('sha1', $encodable_str, $secret, TRUE);
+
+        $hash_64 = base64_encode($hash);
+        
+        if ($signature == $hash_64) {
+            return TRUE;
+        }
+
+        return FALSE;
+}
+
